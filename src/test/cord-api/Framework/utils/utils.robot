@@ -12,22 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Copyright 2017-present Radisys Corporation
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-
-
 *** Settings ***
 Documentation    Library for various utilities
 Library           SSHLibrary
@@ -37,23 +21,59 @@ Library           DateTime
 Library           Process
 Library           Collections
 Library           RequestsLibrary
-#Library           ${CURDIR}/readProperties.py
-#Resource          ${CURDIR}/utils.py
-*** Variables ***
-${SSH_KEY}=   id_rsa
 
 *** Keywords ***
-Run Command On Remote System
-    [Arguments]    ${system}    ${cmd}    ${user}=${VM_USER}    ${pass}=${VM_PASS}    ${prompt}=$    ${prompt_timeout}=60s    ${use_key}=False
-    [Documentation]    SSH's into a remote host, executes command, and logs+returns output
-    BuiltIn.Log    Attempting to execute command "${cmd}" on remote system "${system}"
-    BuiltIn.Log    ${pass}
-    ${conn_id}=    SSHLibrary.Open Connection    ${system}    prompt=${prompt}    timeout=${prompt_timeout}
-    Run Keyword If    '${use_key}' == 'False'    SSHLibrary.Login    ${user}    ${pass}    ELSE    SSHLibrary.Login With Public Key    ${user}    %{HOME}/.ssh/${SSH_KEY}    any
-    #SSHLibrary.Login    ${user}    ${pass}
-    ${output}=    SSHLibrary.Execute Command    ${cmd}
-    SSHLibrary.Close Connection
+Login And Run Command On Remote System
+    [Arguments]    ${cmd}    ${ip}    ${user}    ${pass}=${None}    ${container_type}=${None}    ${container_name}=${None}    ${prompt}=~$    ${prompt_timeout}=15s    ${container_prompt}=#
+    [Documentation]    SSH's into a remote host (and logs into the container if container_type and container_name are specified), tries to switch to root user and executes a command and returns output
+    ${conn_id}    Login To Remote System    ${ip}    ${user}    ${pass}    ${container_type}    ${container_name}    ${prompt}    ${prompt_timeout}    ${container_prompt}
+    ${output}=    Run Command On Remote System    ${cmd}    ${conn_id}    ${user}    ${pass}
     Log    ${output}
+    Logout From Remote System    ${conn_id}
+    [Return]    ${output}
+
+Login To Remote System
+    [Arguments]    ${ip}    ${user}    ${pass}=${None}    ${container_type}=${None}    ${container_name}=${None}    ${prompt}=~$    ${prompt_timeout}=15s    ${container_prompt}=#
+    [Documentation]    SSH's into a remote host (and logs into the container if container_type and container_name are specified) and returns connection ID
+    ${conn_id}=    SSHLibrary.Open Connection    ${ip}    prompt=${prompt}    timeout=${prompt_timeout}
+    Run Keyword If    '${pass}' != '${None}'    SSHLibrary.Login    ${user}    ${pass}
+    ...                                 ELSE    SSHLibrary.Login With Public Key    ${user}    %{HOME}/.ssh/id_rsa
+    # Login to the lxc container
+    Run Keyword If    '${container_type}' == 'LXC'    Run Keywords
+    ...    SSHLibrary.Write    lxc exec ${container_name} /bin/bash    AND
+    ...    SSHLibrary.Read Until    ${container_prompt}    AND
+    ...    SSHLibrary.Set Client Configuration    prompt=${container_prompt}
+    # Login to the k8s container
+    Run Keyword If    '${container_type}' == 'K8S'    Run Keywords
+    ...    SSHLibrary.Write    kubectl -n $(kubectl get pods --all-namespaces | grep ${container_name} | awk '{print $1}') exec ${container_name} -it /bin/bash    AND
+    ...    SSHLibrary.Read Until    ${container_prompt}    AND
+    ...    SSHLibrary.Set Client Configuration    prompt=${container_prompt}
+    # Try to switch to root user
+    ${conn}=    SSHLibrary.Get Connection    ${conn_id}
+    Run Keyword And Ignore Error    SSHLibrary.Write    sudo -s
+    ${output}=    SSHLibrary.Read Until Regexp    \#|${conn.prompt}|password for ${user}:
+    Run Keyword If    'password for ${user}:' not in '''${output}'''    Return From Keyword    ${conn_id}
+    SSHLibrary.Set Client Configuration    prompt=\#
+    SSHLibrary.Write    ${pass}
+    SSHLibrary.Read Until Prompt
+    [Return]    ${conn_id}
+
+Logout From Remote System
+    [Arguments]    ${conn_id}
+    [Documentation]    Exit from the SSH session to a remote host
+    SSHLibrary.Switch Connection    ${conn_id}
+    SSHLibrary.Close Connection
+
+Run Command On Remote System
+    [Arguments]    ${cmd}    ${conn_id}    ${user}    ${pass}=${None}
+    [Documentation]    Executes a command on remote host and returns output
+    ${conn}=    SSHLibrary.Get Connection    ${conn_id}
+    SSHLibrary.Switch Connection    ${conn_id}
+    SSHLibrary.Write    ${cmd}
+    ${output}=    SSHLibrary.Read Until Regexp    ${conn.prompt}|password for ${user}:
+    Run Keyword If    'password for ${user}:' not in '''${output}'''    Return From Keyword    ${output}
+    SSHLibrary.Write    ${pass}
+    ${output}=    SSHlibrary.Read Until Prompt
     [Return]    ${output}
 
 Execute Command on CIAB Server in Specific VM
@@ -130,8 +150,112 @@ Remove Value From List
     \    Run Keyword If    '${value[0]}' == '${val}'    Exit For Loop
 
 Test Ping
-    [Arguments]    ${interface}    ${host}
-    [Documentation]    Ping hosts to check connectivity
-    ${result}=   Run    ping -I ${interface} -c 5 ${host}
-    Should Contain    ${result}    64 bytes
-    Should Not Contain    ${result}    Destination Host Unreachable
+    [Arguments]    ${status}    ${src}    ${user}    ${pass}    ${dest}    ${interface}    ${prompt}=$    ${prompt_timeout}=60s
+    [Documentation]    SSH's into src and attempts to ping dest. Status determines if ping should pass | fail
+    ${conn_id}=    SSHLibrary.Open Connection    ${src}    prompt=${prompt}    timeout=${prompt_timeout}
+    SSHLibrary.Login    ${user}    ${pass}
+    ${result}=    SSHLibrary.Execute Command    ping -I ${interface} -c 5 ${dest}
+    SSHLibrary.Close Connection
+    Log    ${result}
+    Run Keyword If    '${status}' == 'PASS'    Should Contain    ${result}    64 bytes
+    Run Keyword If    '${status}' == 'PASS'    Should Contain    ${result}    0% packet loss
+    Run Keyword If    '${status}' == 'PASS'    Should Not Contain    ${result}    100% packet loss
+    Run Keyword If    '${status}' == 'PASS'    Should Not Contain    ${result}    80% packet loss
+    Run Keyword If    '${status}' == 'PASS'    Should Not Contain    ${result}    60% packet loss
+    Run Keyword If    '${status}' == 'PASS'    Should Not Contain    ${result}    40% packet loss
+    Run Keyword If    '${status}' == 'PASS'    Should Not Contain    ${result}    20% packet loss
+    Run Keyword If    '${status}' == 'PASS'    Should Not Contain    ${result}    Destination Host Unreachable
+    Run Keyword If    '${status}' == 'FAIL'    Should Not Contain    ${result}    64 bytes
+    Run Keyword If    '${status}' == 'FAIL'    Should Contain    ${result}    100% packet loss
+    Log To Console    \n ${result}
+
+Clean Up Objects
+    [Arguments]    ${model_api}
+    @{ids}=    Create List
+    ${resp}=    CORD Get    ${model_api}
+    ${jsondata}=    To Json    ${resp.content}
+    Log    ${jsondata}
+    ${length}=    Get Length    ${jsondata['items']}
+    : FOR    ${INDEX}    IN RANGE    0    ${length}
+    \    ${value}=    Get From List    ${jsondata['items']}    ${INDEX}
+    \    ${id}=    Get From Dictionary    ${value}    id
+    \    Append To List    ${ids}    ${id}
+    : FOR    ${i}    IN    @{ids}
+    \    CORD Delete    ${model_api}    ${i}
+
+CORD Get
+    [Documentation]    Make a GET call to XOS
+    [Arguments]    ${service}
+    ${resp}=    Get Request    ${server_ip}    ${service}
+    Log    ${resp.content}
+    Should Be Equal As Strings    ${resp.status_code}    200
+    [Return]    ${resp}
+
+CORD Post
+    [Documentation]    Make a POST call to XOS
+    [Arguments]    ${service}    ${data}
+    ${data}=    Evaluate    json.dumps(${data})    json
+    ${resp}=    Post Request    ${SERVER_IP}    uri=${service}    data=${data}
+    Log    ${resp.content}
+    Should Be Equal As Strings    ${resp.status_code}    200
+    [Return]    ${resp}
+
+CORD Put
+    [Documentation]    Make a PUT call to XOS
+    [Arguments]    ${service}    ${data}    ${data_id}
+    ${data}=    Evaluate    json.dumps(${data})    json
+    ${resp}=    Put Request    ${SERVER_IP}    uri=${service}/${data_id}    data=${data}
+    Log    ${resp.content}
+    Should Be Equal As Strings    ${resp.status_code}    200
+    ${id}=    Get Json Value    ${resp.content}    /id
+    Set Suite Variable    ${id}
+    [Return]    ${resp}
+
+CORD Delete
+    [Documentation]    Make a DELETE call to XOS
+    [Arguments]    ${service}    ${data_id}
+    ${resp}=    Delete Request    ${SERVER_IP}    uri=${service}/${data_id}
+    Log    ${resp.content}
+    Should Be Equal As Strings    ${resp.status_code}    200
+    [Return]    ${resp}
+
+Get Service Owner Id
+    [Arguments]    ${service}
+    ${resp}=    CORD Get    ${service}
+    ${jsondata}=    To Json    ${resp.content}
+    log    ${jsondata}
+    ${length}=    Get Length    ${jsondata['items']}
+    : for    ${INDEX}    IN RANGE    0    ${length}
+    \    ${value}=    Get From List    ${jsondata['items']}    ${INDEX}
+    \    ${id}=    Get From Dictionary    ${value}    id
+    [Return]    ${id}
+
+Kill Linux Process
+    [Arguments]    ${process}    ${ip}    ${user}    ${pass}=${None}    ${container_type}=${None}    ${container_name}=${None}
+    ${rc}=    Login And Run Command On Remote System    kill $(ps aux | grep '${process}' | awk '{print $2}'); echo $?    ${ip}    ${user}    ${pass}    ${container_type}    ${container_name}
+    Should Be Equal As Integers    ${rc}    0
+
+Check Remote File Contents
+    [Arguments]    ${file_should_exist}    ${file}    ${pattern}    ${ip}    ${user}    ${pass}=${None}    ${container_type}=${None}    ${container_name}=${None}    ${prompt}=~$
+    ${output}=    Login And Run Command On Remote System    cat ${file} | grep '${pattern}'    ${ip}    ${user}    ${pass}    ${container_type}    ${container_name}    ${prompt}
+    Run Keyword If    '${file_should_exist}' == 'True'    Should Contain    ${output}    ${pattern}
+    ...                                           ELSE    Should Not Contain    ${output}    ${pattern}
+
+Check Ping
+    [Arguments]    ${ping_should_pass}    ${dst_ip}    ${iface}    ${ip}    ${user}    ${pass}=${None}    ${container_type}=${None}    ${container_name}=${None}
+    ${result}=    Login And Run Command On Remote System    ping -I ${iface} -c 3 ${dst_ip}    ${ip}    ${user}    ${pass}    ${container_type}    ${container_name}
+    Check Ping Result    ${ping_should_pass}    ${result}
+
+Check Remote System Reachability
+    [Arguments]    ${reachable}    ${ip}
+    [Documentation]    Check if the specified IP address is reachable or not
+    ${result}=    Run    ping -c 3 ${ip}
+    Check Ping Result    ${reachable}    ${result}
+
+Check Ping Result
+    [Arguments]    ${reachable}    ${result}
+    Run Keyword If    '${reachable}' == 'True'    Should Contain    ${result}    64 bytes
+    Run Keyword If    '${reachable}' == 'True'    Should Contain Any   ${result}    0% packet loss    0.0% packet loss
+    Run Keyword If    '${reachable}' == 'True'    Should Not Contain Any    ${result}    100% packet loss    100.0% packet loss
+    Run Keyword If    '${reachable}' == 'False'    Should Not Contain    ${result}    64 bytes
+    Run Keyword If    '${reachable}' == 'False'    Should Contain Any    ${result}    100% packet loss    100.0% packet loss

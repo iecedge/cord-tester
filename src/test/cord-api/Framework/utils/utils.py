@@ -286,10 +286,18 @@ class utils(object):
                 return random.choice([True, False])
         if value == 'int32' or value == 'uint32':
                 return random.randint(1,10000)
-	if value == 'float':
-		return random.uniform(1,10)
+        if value == 'float':
+            return random.uniform(1,10)
+        if value == 'role':
+            return 'admin'
+        if value == 'direction':
+            return random.choice(['in', 'out'])
+        if value == 'flavor':
+            return random.choice(['m1.large', 'm1.medium', 'm1.small'])
+        if value == 'vlan_tag':
+            return random.choice(['555', '1-4096', 'ANY'])
         else:
-                return None
+            return None
 
     def generate_random_slice_name(self):
         random_name = ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(10))
