@@ -423,7 +423,7 @@ Reset SIAB Environment
 
 Validate XConnect in ONOS
     [Arguments]    ${exists}=True
-    ${rc}=    Run And Return RC    http -a karaf:karaf GET http://127.0.0.1:30120/onos/segmentrouting/xconnect|jq -r '.xconnects[].vlanId'|grep 222
+    ${rc}=    Run And Return RC    http -a karaf:karaf GET http://${server_ip}:30120/onos/segmentrouting/xconnect|jq -r '.xconnects[].vlanId'|grep 222
     Run Keyword If    '${exists}' == 'True'    Should Be Equal As Integers    ${rc}    0
     ...                                           ELSE    Should Be Equal As Integers    ${rc}    1
 
