@@ -31,7 +31,7 @@ Send Dhclient Request K8S
     [Documentation]    Run dhclient inside rg container in K8s
     ${RG_CONTAINER}=    Wait Until Keyword Succeeds    60s    1s
     ...    Run    kubectl -n voltha get pod|grep "^rg[0-]"|cut -d' ' -f1
-    Run    kubectl -n voltha exec ${RG_CONTAINER} -- sed -i 's/timeout 300;/timeout 30;/' /etc/dhcp/dhclient.conf
+    Run    kubectl -n voltha exec ${RG_CONTAINER} -- sed -i 's/timeout 300;/timeout 80;/' /etc/dhcp/dhclient.conf
     Run    kubectl -n voltha exec ${RG_CONTAINER} -- ifconfig eth0 0.0.0.0
     Run    kubectl -n voltha exec ${RG_CONTAINER} -- dhclient
 
